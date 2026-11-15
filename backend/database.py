@@ -65,3 +65,20 @@ def execute(query: str, params: tuple = ()) -> int:
         raise
     finally:
         conn.close()
+
+
+def execute_all(statements: list[tuple[str, tuple]]) -> None:
+    """【B-1追加】いくつかの INSERT / UPDATE を、1つの接続で順に実行して、最後に1回だけ commit する。
+    1つでも失敗したら全部を取り消す（rollback）。④の回答（votes と comments）を「全部入るか、何も入らないか」にするため。
+    statements は (SQL, params) の組のリスト。値は execute と同じく params で渡す。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            for query, params in statements:
+                cur.execute(query, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
