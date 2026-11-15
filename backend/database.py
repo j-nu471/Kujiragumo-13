@@ -49,3 +49,19 @@ def fetch_all(query: str, params: tuple = ()) -> list[dict]:
             return cur.fetchall()
     finally:
         conn.close()
+
+
+def execute(query: str, params: tuple = ()) -> int:
+    """【C-0追加】INSERT / UPDATE を実行して commit し、影響した行数を返す。
+    値は fetch_all と同じく params で渡す（SQL の %s に入る）。commit しないと DB に確定しない。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            n = cur.execute(query, params)
+        conn.commit()
+        return n
+    except Exception:
+        conn.rollback()  # 途中で失敗したら、書きかけを取り消す
+        raise
+    finally:
+        conn.close()

@@ -14,6 +14,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import fetch_all
+from routers import colleague, shares, summary  # 【C-0追加】共有リスト機能のルーター（担当ごとに分ける。ADR-0006）
 
 load_dotenv()  # .env を読む（DB の接続情報・CORS の許可）
 
@@ -24,9 +25,12 @@ app = FastAPI(title="Giftia Search API（2週目）")
 # ブラウザは既定で「別オリジンへの通信」を止めるので、API 側が「この画面からは受け付ける」と宣言する。
 # 許可する画面の URL は .env の CORS_ORIGINS に書く（カンマ区切りで複数可）。空なら何も許可しない。
 origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["*"])
 
-
+# ── ルーター（担当ごとにファイルを分ける。ADR-0006）──────
+app.include_router(shares.router)     # A：POST /api/shares, GET /api/shares/{share_id}
+app.include_router(colleague.router)  # B：POST /api/shares/{share_id}/answers
+app.include_router(summary.router)    # C：GET .../summary, POST .../purchase-click
 @app.get("/api/health")
 def health():
     """つながっているかの確認。どの DB に何件の商品があるか"""
