@@ -1,6 +1,6 @@
-// lib/colleague.ts — ④ 同僚の画面（B）が使う型と、API を呼ぶ関数
-// いまは型と定数だけ。API を呼ぶ関数は、C-0（lib/config.ts）と A-2（GET /api/shares/{share_id}）の
-// マージ後に足す（設計.md「構成」）。
+// lib/colleague.ts — ④ 同僚の画面（B）が使う型と、API を呼ぶ関数（設計.md「構成」）
+// API の場所は lib/config.ts から読む。localhost を直接書かない（ADR-0009）
+import { API_BASE_URL } from "./config";
 
 // GET /api/shares/{share_id} が返す items の1件（仕様.md「入力と出力」）
 export type ShareItem = {
@@ -33,3 +33,37 @@ export type AnswerBody = {
   vote: string | null;
   comments: AnswerComment[];
 };
+
+// GET /api/shares/{share_id} の返り値（仕様.md「入力と出力」）
+export type Share = {
+  share_id: string;
+  items: ShareItem[];
+};
+
+// API が 200 以外を返したときのエラー。画面で 404 とそれ以外を分けるために status を持つ
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number) {
+    super(`HTTP ${status}`);
+    this.status = status;
+  }
+}
+
+const shareUrl = (shareId: string) => `${API_BASE_URL}/api/shares/${encodeURIComponent(shareId)}`;
+
+// 共有リストの候補を読む（A の API。④⑤で使う）
+export async function fetchShare(shareId: string): Promise<Share> {
+  const res = await fetch(shareUrl(shareId), { cache: "no-store" });
+  if (!res.ok) throw new ApiError(res.status);
+  return res.json();
+}
+
+// 回答（賛成とコメント）を送る（B-1 の API）。うまくいけば何も返さない
+export async function postAnswer(shareId: string, answer: AnswerBody): Promise<void> {
+  const res = await fetch(`${shareUrl(shareId)}/answers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(answer),
+  });
+  if (!res.ok) throw new ApiError(res.status);
+}

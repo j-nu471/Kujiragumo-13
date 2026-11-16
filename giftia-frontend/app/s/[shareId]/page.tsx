@@ -1,26 +1,26 @@
 // app/s/[shareId]/page.tsx — ④ 賛成・コメント（同僚の画面。B）
 // 仕様.md「④ 賛成・コメント」、F-04、ADR-0010（匿名・賛成は1つだけ）
 //
-// いまは候補を仮のデータで出し、「送る」でも保存しない（送る内容をブラウザの Console に出すだけ）。
-// C-0・A-2・B-1 のマージ後に、lib/colleague.ts の関数で API につなぐ。
+// 開いたときに候補を API（GET /api/shares/{share_id}）から読み、
+// 「送信する」で回答を API（POST …/answers）に保存する。
 "use client"; // ← ボタンや入力を扱うので、ブラウザで動く画面にする
 
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import {
   REASONS,
   BODY_MAX,
+  ApiError,
+  fetchShare,
+  postAnswer,
   type ShareItem,
   type ReasonKey,
   type AnswerComment,
   type AnswerBody,
 } from "@/lib/colleague";
 
-// 仮のデータ（API につないだら消す）
-const SAMPLE_ITEMS: ShareItem[] = [
-  { id: "G0001", name: "（仮）商品A", price: 3240, rating: 4.5, position: 1 },
-  { id: "G0002", name: "（仮）商品B", price: 4320, rating: 4.1, position: 2 },
-  { id: "G0003", name: "（仮）商品C", price: 2980, rating: 3.8, position: 3 },
-];
+// 仕様.md「エラー時の挙動」の文言
+const NOT_FOUND_MESSAGE = "この共有リストは見つかりません";
+const RETRY_MESSAGE = "時間をおいてもう一度お試しください";
 
 // 候補ごとの入力（理由とひとこと）
 type Draft = { reason: ReasonKey | ""; body: string };
@@ -58,25 +58,58 @@ const countChars = (s: string) => [...s].length;
 export default function ColleaguePage({ params }: { params: Promise<{ shareId: string }> }) {
   // URL の [shareId] の部分（Next.js 16 では Promise で渡されるので use で取り出す）
   const { shareId } = use(params);
-  const items = SAMPLE_ITEMS;
 
   // ① 状態（変化するデータ）を覚える箱
+  const [items, setItems] = useState<ShareItem[] | null>(null);  // 候補（読み込むまでは null）
+  const [loadError, setLoadError] = useState("");                 // 候補を読めなかったときの文言
   const [vote, setVote] = useState<string | null>(null);         // 賛成した商品の ID（1つだけ）
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}); // 候補ごとの理由とひとこと
   const [error, setError] = useState("");                         // 送れなかったときの文言
-  const [sent, setSent] = useState(false);                        // 送ったかどうか
+  const [sending, setSending] = useState(false);                  // 送信中かどうか（二重送信を防ぐ）
+  const [sent, setSent] = useState(false);                        // 保存できたかどうか
+
+  // ② 画面を開いたとき、共有リストの候補を API に聞く
+  useEffect(() => {
+    let cancelled = false; // 画面を離れたあとに結果が届いても、使わない
+    fetchShare(shareId)
+      .then((share) => { if (!cancelled) setItems(share.items); })
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadError(err instanceof ApiError && err.status === 404 ? NOT_FOUND_MESSAGE : RETRY_MESSAGE);
+      });
+    return () => { cancelled = true; };
+  }, [shareId]);
 
   const draftOf = (id: string) => drafts[id] ?? EMPTY_DRAFT;
   function updateDraft(id: string, change: Partial<Draft>) {
     setDrafts((d) => ({ ...d, [id]: { ...(d[id] ?? EMPTY_DRAFT), ...change } }));
   }
 
+  // 候補を読めなかったとき／読み込み中
+  if (loadError) {
+    return (
+      <main className="page">
+        <header className="header"><h1>Giftia</h1></header>
+        <p className="summary" role="alert">{loadError}</p>
+      </main>
+    );
+  }
+  if (!items) {
+    return (
+      <main className="page">
+        <header className="header"><h1>Giftia</h1></header>
+        <p className="summary">読み込み中…</p>
+      </main>
+    );
+  }
+
   // ひとことが長すぎる候補があれば、送れないようにする（仕様.md「エラー時の挙動」）
   const tooLong = items.some((item) => countChars(draftOf(item.id).body) > BODY_MAX);
 
-  // ② 「送る」の処理
-  function onSend(e: React.FormEvent) {
+  // ③ 「送信する」の処理
+  async function onSend(e: React.FormEvent) {
     e.preventDefault(); // ページの再読み込みを止める
+    if (!items || sending || sent) return; // 送信中・送信済みなら何もしない（二重送信を防ぐ）
     setError("");
 
     // 理由かひとことがある候補だけをコメントにする（両方空の候補は送らない）
@@ -98,12 +131,19 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
     }
 
     const answer: AnswerBody = { vote, comments };
-    // 仮：まだ保存しない。B-1 のマージ後に API を呼ぶ形に置き換える
-    console.log("送る内容（仮。まだ保存しない）", shareId, answer);
-    setSent(true); // 送ったあとは送るボタンを押せなくする（ADR-0010）
+    setSending(true);
+    try {
+      await postAnswer(shareId, answer);
+      setSent(true); // 保存できたときだけ。送ったあとは送信ボタンを押せなくする（ADR-0010）
+    } catch (err) {
+      // 失敗したら、お礼は出さずにエラーを出す。入力はそのままなので、もう一度送れる
+      setError(err instanceof ApiError && err.status === 404 ? NOT_FOUND_MESSAGE : RETRY_MESSAGE);
+    } finally {
+      setSending(false);
+    }
   }
 
-  // ③ 画面
+  // ④ 画面
   return (
     <main className="page">
       <header className="header"><h1>Giftia</h1></header>
@@ -113,8 +153,8 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
       </p>
 
       <form onSubmit={onSend}>
-        {/* 送ったあとは、まとめて押せなくする */}
-        <fieldset disabled={sent} style={{ border: "none", padding: 0, margin: 0 }}>
+        {/* 送信中と送ったあとは、まとめて押せなくする */}
+        <fieldset disabled={sending || sent} style={{ border: "none", padding: 0, margin: 0 }}>
           <div className="grid">
             {items.map((item) => {
               const draft = draftOf(item.id);
@@ -165,10 +205,18 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
             })}
           </div>
 
-          {error && <p className="summary">{error}</p>}
+          {/* role="alert"：エラーが出たことを、読み上げソフトにも伝える */}
+          {error && <p className="summary" role="alert">{error}</p>}
 
           <div className="form">
-            <button type="submit" disabled={tooLong}>送信する</button>
+            {/* 押せないとき（送信中・送信済み・ひとことが長すぎる）は、薄くして見た目でもわかるようにする */}
+            <button
+              type="submit"
+              disabled={tooLong}
+              style={tooLong || sending || sent ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+            >
+              {sending ? "送信中…" : "送信する"}
+            </button>
           </div>
         </fieldset>
       </form>

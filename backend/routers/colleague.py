@@ -6,6 +6,7 @@
 #   返す：{"ok": true}
 # 名前は受け取らない・保存しない。1回の回答ごとに answer_id（UUID）を作り、votes と comments にまとめて書く。
 
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from database import execute_all, fetch_all
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # いいと思った理由の選択肢（仕様.md「データ」の comments.reason_key、N-05）
 REASON_KEYS = {"fits", "tasty", "want"}
@@ -75,7 +77,7 @@ def post_answer(share_id: str, answer: AnswerIn):
     try:
         items = fetch_all("SELECT product_id FROM share_items WHERE share_id = %s", (share_id,))
     except Exception as e:
-        print(f"[answers] DB の読み込みに失敗: {type(e).__name__}")  # 接続情報やエラーの全文は出さない
+        logger.error("answers: DB の読み込みに失敗 (%s)", type(e).__name__)  # 接続情報やエラーの全文は出さない
         raise HTTPException(status_code=500, detail=DB_ERROR_MESSAGE)
     if not items:
         raise HTTPException(status_code=404, detail="この共有リストは見つかりません")
@@ -99,7 +101,7 @@ def post_answer(share_id: str, answer: AnswerIn):
     try:
         execute_all(statements)
     except Exception as e:
-        print(f"[answers] DB への書き込みに失敗: {type(e).__name__}")
+        logger.error("answers: DB への書き込みに失敗 (%s)", type(e).__name__)
         raise HTTPException(status_code=500, detail=DB_ERROR_MESSAGE)
 
     return {"ok": True}
