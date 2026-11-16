@@ -3,16 +3,33 @@
 #   GET  /api/shares/{share_id}  共有リストの候補を読む。④（B）・⑤（C）の画面も使う（F-04・F-06）
 # 入出力は 仕様.md「入力と出力」、エラーの返し方は「エラー時の挙動」に合わせる。
 
+import logging
 import uuid
+from contextlib import contextmanager
 
+import pymysql
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from database import execute_all, fetch_all
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")  # uvicorn のターミナルに出す
 
 MAX_ITEMS = 3  # 候補は3つまで（F-03）
+DB_ERROR_MESSAGE = "時間をおいてもう一度お試しください"  # 仕様.md「エラー時の挙動」の「DB につながらない」
+
+
+@contextmanager
+def db_errors_as_500():
+    """この with の中で DB が失敗したら（つながらない・.env が足りない など）、500 と決まった文を返す。
+    エラーの全文には DB の接続先が入ることがあるので、画面にもログにも出さず、種類の名前だけをログに出す（N-01）。
+    400・404（HTTPException）は DB の失敗ではないので、そのまま通す。"""
+    try:
+        yield
+    except (pymysql.MySQLError, OSError) as e:  # OSError は .env が足りないとき（EnvironmentError）も含む
+        logger.warning("shares: DB error (%s)", type(e).__name__)
+        raise HTTPException(status_code=500, detail=DB_ERROR_MESSAGE) from None
 
 
 class ShareCreate(BaseModel):
@@ -33,7 +50,8 @@ def create_share(body: ShareCreate):
 
     # ② 商品が products 表にあるか確かめる（U-01）。%s を ID の数だけ並べ、値は params で渡す（N-03）
     placeholders = ", ".join(["%s"] * len(ids))
-    found = fetch_all(f"SELECT product_id FROM products WHERE product_id IN ({placeholders})", tuple(ids))
+    with db_errors_as_500():
+        found = fetch_all(f"SELECT product_id FROM products WHERE product_id IN ({placeholders})", tuple(ids))
     if len(found) != len(ids):
         raise HTTPException(status_code=400, detail="商品の一覧にない ID があります")
 
@@ -46,10 +64,11 @@ def create_share(body: ShareCreate):
     params = []
     for position, product_id in enumerate(ids, start=1):
         params += [share_id, product_id, position]
-    execute_all([
-        ("INSERT INTO share_lists (share_id) VALUES (%s)", (share_id,)),
-        (f"INSERT INTO share_items (share_id, product_id, position) VALUES {rows}", tuple(params)),
-    ])
+    with db_errors_as_500():
+        execute_all([
+            ("INSERT INTO share_lists (share_id) VALUES (%s)", (share_id,)),
+            (f"INSERT INTO share_items (share_id, product_id, position) VALUES {rows}", tuple(params)),
+        ])
 
     return {"share_id": share_id}
 
@@ -58,18 +77,21 @@ def create_share(body: ShareCreate):
 def get_share(share_id: str):
     """共有リストの候補を、入れた順に返す"""
     # ① その番号の共有リストがあるか（なければ 404）
-    if not fetch_all("SELECT share_id FROM share_lists WHERE share_id = %s", (share_id,)):
+    with db_errors_as_500():
+        exists = fetch_all("SELECT share_id FROM share_lists WHERE share_id = %s", (share_id,))
+    if not exists:
         raise HTTPException(status_code=404, detail="この共有リストは見つかりません")
 
     # ② 候補（share_items）と商品（products）を product_id でつなぎ、商品名・価格・評価を取る
-    rows = fetch_all(
-        """SELECT si.position, p.product_id, p.product_name, p.price, p.rating
-           FROM share_items AS si
-           JOIN products AS p ON p.product_id = si.product_id
-           WHERE si.share_id = %s
-           ORDER BY si.position""",
-        (share_id,),
-    )
+    with db_errors_as_500():
+        rows = fetch_all(
+            """SELECT si.position, p.product_id, p.product_name, p.price, p.rating
+               FROM share_items AS si
+               JOIN products AS p ON p.product_id = si.product_id
+               WHERE si.share_id = %s
+               ORDER BY si.position""",
+            (share_id,),
+        )
     # ③ 画面で使う項目名に詰め替える（検索 API の to_gift と同じ名前。評価がなければ 0）
     items = [
         {
