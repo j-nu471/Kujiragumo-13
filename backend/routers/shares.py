@@ -8,7 +8,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from database import execute, fetch_all
+from database import execute_all, fetch_all
 
 router = APIRouter()
 
@@ -40,13 +40,16 @@ def create_share(body: ShareCreate):
     # ③ 番号を作る。連番だと他人のリストを覗けるので、推測できない UUID（36文字）にする（N-04、ADR-0007）
     share_id = str(uuid.uuid4())
 
-    # ④ 共有リストを1行書く → ⑤ 候補を、選んだ順（position 1〜3）つきで1回の SQL でまとめて書く
-    execute("INSERT INTO share_lists (share_id) VALUES (%s)", (share_id,))
+    # ④ 共有リストを1行 ＋ ⑤ 候補を、選んだ順（position 1〜3）つきで書く。
+    #    execute_all で1つの束にして確定する。どちらかが失敗したら両方取り消す（候補0個のリストを残さない）
     rows = ", ".join(["(%s, %s, %s)"] * len(ids))
     params = []
     for position, product_id in enumerate(ids, start=1):
         params += [share_id, product_id, position]
-    execute(f"INSERT INTO share_items (share_id, product_id, position) VALUES {rows}", tuple(params))
+    execute_all([
+        ("INSERT INTO share_lists (share_id) VALUES (%s)", (share_id,)),
+        (f"INSERT INTO share_items (share_id, product_id, position) VALUES {rows}", tuple(params)),
+    ])
 
     return {"share_id": share_id}
 
