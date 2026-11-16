@@ -76,10 +76,11 @@ export default function SummaryPage({ params }: { params: Promise<{ shareId: str
       <div className="card" style={{ marginBottom: 12 }}>
         {top ? (
           <>
-            <h3 className="name">いちばん賛成が多い候補：{top.name}</h3>
-            <p className="meta">
-              {top.votes}票
-              {top.reason_key && `・多かった理由は「${reasonLabel(top.reason_key)}」（${top.reason_count}件）`}
+            <h3 className="name">1位：{top.name}</h3>
+　　　　　　 <p className="meta">
+              {top.votes}人が賛成。
+              {top.reason_key &&
+               `いいと思った理由：${reasonLabel(top.reason_key)}（${top.reason_count}人）`}
             </p>
           </>
         ) : (
@@ -97,7 +98,7 @@ export default function SummaryPage({ params }: { params: Promise<{ shareId: str
             <p className="price">{item.price.toLocaleString()}円</p>
             <p className="meta">賛成 {item.votes}票</p>
             <p className="meta">
-              {REASONS.map((r) => `${r.label} ${item.reasons[r.key]}`).join("／")}
+              {REASONS.map((r) => `${r.label} ${item.reasons[r.key]}人`).join("／")}
             </p>
 
             {item.comments.length > 0 && (
