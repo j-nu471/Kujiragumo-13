@@ -9,6 +9,7 @@
 #   DB_SSL_CA   = 配布された SSL証明書のパス（任意。入れると Workbench の「Verify CA」と同じく相手を確かめる）
 
 import os
+import threading
 
 import pymysql
 from dotenv import load_dotenv
@@ -16,8 +17,9 @@ from dotenv import load_dotenv
 load_dotenv()  # 同じフォルダの .env を読み、os.environ に入れる
 
 
-def get_connection():
-    """班のDBへの接続を1つ作って返す。使い終わったら close() する（fetch_all が面倒を見る）"""
+def get_connection(autocommit: bool = False):
+    """班のDBへの接続を1つ作って返す。使い終わったら close() する（execute 系が面倒を見る）。
+    autocommit=True は「読むだけ」の接続用（fetch_all が使い回す。下の _read_connection）"""
     required = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"]
     missing = [k for k in required if not os.environ.get(k)]
     if missing:
@@ -36,19 +38,44 @@ def get_connection():
         cursorclass=pymysql.cursors.DictCursor,  # 行を {列名: 値} の形で受け取る（JSON にしやすい）
         connect_timeout=10,
         ssl=ssl,
+        autocommit=autocommit,
     )
+
+
+# ── 読む用の接続を使い回す（F-3：呼び出しごとの接続をやめる）──────────────────
+# 検索は「件数」と「一覧」で fetch_all を2回呼ぶ。毎回 Azure へ暗号化接続を張ると遅い。
+# ・スレッドごとに1本だけ持つ（FastAPI の通常の関数は別スレッドで動く。1本を共有すると同時利用で壊れる）
+# ・autocommit=True にする。しないと、読んだ時点の状態（スナップショット）が残り、
+#   別の接続で入った賛成が、あとから読んでも見えなくなる
+# ・使う前に ping で生きているか確かめ、切れていたら張り直す（reconnect=True）
+# 書き込み（execute / execute_all）は今までどおり、1回ごとに接続して commit / rollback する
+_local = threading.local()
+
+
+def _read_connection():
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.ping(reconnect=True)
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    conn = get_connection(autocommit=True)
+    _local.conn = conn
+    return conn
 
 
 def fetch_all(query: str, params: tuple = ()) -> list[dict]:
     """SELECT を実行して、行を dict のリストで返す。
-    値は params で渡す（SQL の中の %s に入る）。文字列に直接つなげると、入力次第で DB を壊される。"""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            return cur.fetchall()
-    finally:
-        conn.close()
+    値は params で渡す（SQL の中の %s に入る）。文字列に直接つなげると、入力次第で DB を壊される。
+    接続はスレッドごとに使い回す（閉じない）。"""
+    conn = _read_connection()
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        return cur.fetchall()
 
 
 def execute(query: str, params: tuple = ()) -> int:
