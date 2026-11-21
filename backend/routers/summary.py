@@ -7,12 +7,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from database import execute, fetch_all
+from reasons import REASON_KEYS
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# いいと思った理由（fits=送る人にあってる／tasty=おいしそう／want=自分も欲しい）
-REASON_KEYS = ("fits", "tasty", "want")
+# いいと思った理由の key は backend/reasons.py から読む（ADR-0013）
 
 
 def _not_found() -> HTTPException:

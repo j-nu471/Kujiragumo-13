@@ -1,9 +1,10 @@
 // lib/summary.ts — ⑤ 集計画面（C-2）が使う型と、API を呼ぶ関数
 // 仕様.md「GET /api/shares/{share_id}/summary」「POST …/purchase-click」
 import { API_BASE_URL } from "./config";
-import type { ReasonKey } from "./colleague";
+import type { ReasonKey } from "./reasons";
 
-export type ReasonCounts = { fits: number; tasty: number; want: number };
+// 理由ごとの人数（理由の key は lib/reasons.ts。ADR-0013）
+export type ReasonCounts = Record<ReasonKey, number>;
 
 // 候補1件の集計（API が賛成の多い順に並べて返す）
 export type SummaryItem = {

@@ -1,5 +1,5 @@
 // app/s/[shareId]/page.tsx — ④ 賛成・コメント（同僚の画面。B）
-// 仕様.md「④ 賛成・コメント」、F-04、ADR-0010（匿名・賛成は1つだけ）
+// 仕様.md「④ 賛成・コメント」、F-04、ADR-0010（匿名）・ADR-0013（理由の選択肢・必須）・ADR-0014（賛成はいくつでも）
 //
 // 開いたときに候補を API（GET /api/shares/{share_id}）から読み、
 // 「送信する」で回答を API（POST …/answers）に保存する。
@@ -7,20 +7,21 @@
 
 import { use, useEffect, useState } from "react";
 import {
-  REASONS,
   BODY_MAX,
   ApiError,
   fetchShare,
   postAnswer,
   type ShareItem,
-  type ReasonKey,
   type AnswerComment,
   type AnswerBody,
 } from "@/lib/colleague";
+import { REASONS, type ReasonKey } from "@/lib/reasons";
 
 // 仕様.md「エラー時の挙動」の文言
 const NOT_FOUND_MESSAGE = "この共有リストは見つかりません";
 const RETRY_MESSAGE = "時間をおいてもう一度お試しください";
+const NEED_REASON_MESSAGE = "賛成した候補の理由を選んでください";
+const EMPTY_MESSAGE = "賛成を1つ以上押すか、ひとことを書いてください";
 
 // 候補ごとの入力（理由とひとこと）
 type Draft = { reason: ReasonKey | ""; body: string };
@@ -28,7 +29,7 @@ const EMPTY_DRAFT: Draft = { reason: "", body: "" };
 
 // 賛成ボタンの見た目（globals.css は配布のものなので触らず、この画面の中だけで決める）
 // 幅は固定（チェックの有無で横の入力欄の位置が動かないように）
-// 賛成している候補：緑＋チェック／ほかの候補に賛成したあとの残りの候補：薄いグレー
+// 賛成している候補：緑＋チェック／賛成していない候補：ふつうのボタン（賛成はいくつでも押せるので、グレーにしない）
 const VOTE_GREEN = "#2f855a";
 const VOTE_BASE_STYLE: React.CSSProperties = {
   flex: "0 0 104px", width: 104,
@@ -37,9 +38,6 @@ const VOTE_BASE_STYLE: React.CSSProperties = {
 };
 const VOTED_STYLE: React.CSSProperties = {
   ...VOTE_BASE_STYLE, background: VOTE_GREEN, color: "#fff", borderColor: VOTE_GREEN, fontWeight: 700,
-};
-const NOT_CHOSEN_STYLE: React.CSSProperties = {
-  ...VOTE_BASE_STYLE, background: "#f3f4f6", color: "#9aa5b1", borderColor: "#e4e7eb",
 };
 
 // 賛成している候補に付けるチェックの印（文字の「☑」ではなく線で描く）
@@ -62,7 +60,7 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
   // ① 状態（変化するデータ）を覚える箱
   const [items, setItems] = useState<ShareItem[] | null>(null);  // 候補（読み込むまでは null）
   const [loadError, setLoadError] = useState("");                 // 候補を読めなかったときの文言
-  const [vote, setVote] = useState<string | null>(null);         // 賛成した商品の ID（1つだけ）
+  const [votes, setVotes] = useState<string[]>([]);              // 賛成した商品の ID（いくつでも）
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}); // 候補ごとの理由とひとこと
   const [error, setError] = useState("");                         // 送れなかったときの文言
   const [sending, setSending] = useState(false);                  // 送信中かどうか（二重送信を防ぐ）
@@ -83,6 +81,16 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
   const draftOf = (id: string) => drafts[id] ?? EMPTY_DRAFT;
   function updateDraft(id: string, change: Partial<Draft>) {
     setDrafts((d) => ({ ...d, [id]: { ...(d[id] ?? EMPTY_DRAFT), ...change } }));
+  }
+
+  // 賛成ボタン：押すと付き、もう一度押すと外れる。外したら、その候補の理由も消す（理由は賛成した候補にだけ選べる）
+  function toggleVote(id: string) {
+    if (votes.includes(id)) {
+      setVotes((v) => v.filter((x) => x !== id));
+      updateDraft(id, { reason: "" });
+    } else {
+      setVotes((v) => [...v, id]);
+    }
   }
 
   // 候補を読めなかったとき／読み込み中
@@ -112,25 +120,34 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
     if (!items || sending || sent) return; // 送信中・送信済みなら何もしない（二重送信を防ぐ）
     setError("");
 
+    // 賛成した候補は、理由を選んでいないと送らない（S-08）
+    const voted = items.filter((item) => votes.includes(item.id)); // 画面の並びの順にそろえる
+    if (voted.some((item) => !draftOf(item.id).reason)) {
+      setError(NEED_REASON_MESSAGE);
+      return;
+    }
+
     // 理由かひとことがある候補だけをコメントにする（両方空の候補は送らない）
+    // 理由は賛成した候補の分だけ送る
     const comments: AnswerComment[] = [];
     for (const item of items) {
       const { reason, body } = draftOf(item.id);
+      const isVoted = votes.includes(item.id);
       const text = body.trim();
-      if (!reason && !text) continue;
+      if (!(isVoted && reason) && !text) continue;
       const comment: AnswerComment = { product_id: item.id };
-      if (reason) comment.reason_key = reason;
+      if (isVoted && reason) comment.reason_key = reason;
       if (text) comment.body = text;
       comments.push(comment);
     }
 
-    // 賛成もコメントも空なら送らない（S-05）
-    if (vote === null && comments.length === 0) {
-      setError("賛成か理由を1つ以上選んでください");
+    // 賛成もひとことも空なら送らない（S-05）
+    if (voted.length === 0 && comments.length === 0) {
+      setError(EMPTY_MESSAGE);
       return;
     }
 
-    const answer: AnswerBody = { vote, comments };
+    const answer: AnswerBody = { votes: voted.map((item) => item.id), comments };
     setSending(true);
     try {
       await postAnswer(shareId, answer);
@@ -149,7 +166,7 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
       <header className="header"><h1>Giftia</h1></header>
       <h2 style={{ fontSize: 18, margin: "8px 0 4px" }}>ギフト候補</h2>
       <p className="summary">
-        いいと思ったギフト候補ひとつに賛成ボタンを押してください。（匿名での回答となります）
+        いいと思ったギフト候補に賛成ボタンを押してください（いくつでも押せます）。賛成した候補には、いいと思った理由を選んでください。（匿名での回答となります）
       </p>
 
       <form onSubmit={onSend}>
@@ -158,7 +175,7 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
           <div className="grid">
             {items.map((item) => {
               const draft = draftOf(item.id);
-              const voted = vote === item.id;
+              const voted = votes.includes(item.id);
               const length = countChars(draft.body);
               return (
                 <div className="card" key={item.id}>
@@ -167,23 +184,26 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
                   <p className="meta">評価{item.rating}</p>
 
                   <div className="form">
-                    {/* 賛成は1つだけ。別の候補を押すと賛成が移る */}
+                    {/* 賛成はいくつでも。押すと付き、もう一度押すと外れる */}
                     <button
                       type="button"
                       aria-pressed={voted}
-                      onClick={() => setVote(item.id)}
-                      style={voted ? VOTED_STYLE : vote !== null ? NOT_CHOSEN_STYLE : VOTE_BASE_STYLE}
+                      onClick={() => toggleVote(item.id)}
+                      style={voted ? VOTED_STYLE : VOTE_BASE_STYLE}
                     >
                       {voted && <CheckIcon />}
                       賛成
                     </button>
 
-                    {/* いいと思った理由（任意。賛成していない候補にも付けられる） */}
+                    {/* いいと思った理由（賛成した候補だけ選べる。選ぶのは必須） */}
                     <select
                       value={draft.reason}
+                      disabled={!voted}
+                      aria-label="いいと思った理由"
+                      aria-invalid={voted && !draft.reason && error === NEED_REASON_MESSAGE}
                       onChange={(e) => updateDraft(item.id, { reason: e.target.value as ReasonKey | "" })}
                     >
-                      <option value="">いいと思った理由（任意）</option>
+                      <option value="" disabled>{voted ? "いいと思った理由を選んでください" : "賛成すると理由を選べます"}</option>
                       {REASONS.map((r) => (
                         <option key={r.key} value={r.key}>{r.label}</option>
                       ))}
@@ -208,12 +228,16 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
           {/* role="alert"：エラーが出たことを、読み上げソフトにも伝える */}
           {error && <p className="summary" role="alert">{error}</p>}
 
-          <div className="form">
+          {/* 送信ボタンは中央に置き、少し幅を広くして目に入りやすくする（globals.css は触らず、この画面の中だけで決める） */}
+          <div className="form" style={{ justifyContent: "center" }}>
             {/* 押せないとき（送信中・送信済み・ひとことが長すぎる）は、薄くして見た目でもわかるようにする */}
             <button
               type="submit"
               disabled={tooLong}
-              style={tooLong || sending || sent ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+              style={{
+                minWidth: 200,
+                ...(tooLong || sending || sent ? { opacity: 0.45, cursor: "not-allowed" } : {}),
+              }}
             >
               {sending ? "送信中…" : "送信する"}
             </button>

@@ -3,11 +3,8 @@
 "use client"; // ← ボタンや取得結果を扱うので、ブラウザで動く画面にする
 
 import { use, useEffect, useState } from "react";
-import { REASONS } from "@/lib/colleague";
+import { REASONS, reasonLabel } from "@/lib/reasons";
 import { ApiError, fetchSummary, postPurchaseClick, type Summary } from "@/lib/summary";
-
-// 理由のキー（fits など）を、画面の文言（送る人にあってる など）に直す
-const reasonLabel = (key: string) => REASONS.find((r) => r.key === key)?.label ?? key;
 
 export default function SummaryPage({ params }: { params: Promise<{ shareId: string }> }) {
   // URL の [shareId] の部分（Next.js 16 では Promise で渡されるので use で取り出す）

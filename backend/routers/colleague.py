@@ -1,9 +1,12 @@
 # routers/colleague.py — ④ 同僚の賛成・コメントを保存する API（B）
-# 仕様.md「入力と出力」F-04、「エラー時の挙動」、ADR-0010（匿名・賛成は1つだけ・answer_id）
+# 仕様.md「入力と出力」F-04、「エラー時の挙動」、ADR-0010（匿名・answer_id）・ADR-0013（理由の選択肢・必須）・ADR-0014（賛成はいくつでも）
 #
 # POST /api/shares/{share_id}/answers
-#   本文：{"vote": "G0001" または null, "comments": [{"product_id": "G0001", "reason_key": "fits", "body": "先輩っぽい"}]}
+#   本文：{"votes": ["G0001", "G0002"],
+#          "comments": [{"product_id": "G0001", "reason_key": "wanted", "body": "先輩っぽい"},
+#                       {"product_id": "G0002", "reason_key": "none"}]}
 #   返す：{"ok": true}
+# 賛成した候補には理由（reason_key）が必ず要る。賛成していない候補には理由を付けられない（ひとことだけなら付けられる）。
 # 名前は受け取らない・保存しない。1回の回答ごとに answer_id（UUID）を作り、votes と comments にまとめて書く。
 
 import logging
@@ -13,12 +16,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from database import execute_all, fetch_all
+from reasons import REASON_KEYS
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# いいと思った理由の選択肢（仕様.md「データ」の comments.reason_key、N-05）
-REASON_KEYS = {"fits", "tasty", "want"}
 # ひとことの上限（N-05）
 BODY_MAX = 200
 
@@ -27,12 +29,12 @@ DB_ERROR_MESSAGE = "時間をおいてもう一度お試しください"
 
 class CommentIn(BaseModel):
     product_id: str
-    reason_key: str | None = None  # 省略できる
+    reason_key: str | None = None  # 賛成した候補には必ず要る。賛成していない候補には付けない
     body: str | None = None        # 省略できる
 
 
 class AnswerIn(BaseModel):
-    vote: str | None = None        # 賛成した商品の ID（1つだけ）。賛成しないなら null
+    votes: list[str] = []          # 賛成した商品の ID（0〜3つ。ADR-0014）
     comments: list[CommentIn] = []
 
 
@@ -43,10 +45,17 @@ def bad_request(message: str) -> HTTPException:
 def check_answer(answer: AnswerIn, candidates: set[str]) -> list[tuple[str, str | None, str | None]]:
     """入力を確かめて、保存するコメントを (product_id, reason_key, body) のリストで返す。
     おかしいところがあれば 400 を投げる（U-02）。DB は使わないので、単体で確かめられる。"""
-    if answer.vote is not None and answer.vote not in candidates:
-        raise bad_request("賛成した商品が、この共有リストの候補にありません")
+    # 賛成：候補の中の商品で、同じ商品は1回だけ
+    votes = set()
+    for product_id in answer.votes:
+        if product_id not in candidates:
+            raise bad_request("賛成した商品が、この共有リストの候補にありません")
+        if product_id in votes:
+            raise bad_request("同じ候補に2回賛成しています")
+        votes.add(product_id)
 
     rows = []
+    reasons = {}  # 理由を選んだ候補 → 理由
     seen = set()
     for c in answer.comments:
         if c.product_id not in candidates:
@@ -59,14 +68,22 @@ def check_answer(answer: AnswerIn, candidates: set[str]) -> list[tuple[str, str 
         body = (c.body or "").strip() or None
         if reason is not None and reason not in REASON_KEYS:
             raise bad_request("いいと思った理由は、選択肢の中から選んでください")
+        if reason is not None and c.product_id not in votes:
+            raise bad_request("理由は、賛成した候補にだけ選べます")
         if body is not None and len(body) > BODY_MAX:  # len は画面と同じく、絵文字も1文字と数える
             raise bad_request(f"ひとことは{BODY_MAX}文字までです")
+        if reason is not None:
+            reasons[c.product_id] = reason
         if reason is None and body is None:
             continue  # 理由もひとことも空なら保存しない（仕様.md「データ」）
         rows.append((c.product_id, reason, body))
 
-    if answer.vote is None and not rows:
-        raise bad_request("賛成か理由を1つ以上選んでください")
+    # 賛成した候補には、理由が必ず要る（ADR-0013）
+    if any(product_id not in reasons for product_id in votes):
+        raise bad_request("賛成した候補の理由を選んでください")
+
+    if not votes and not rows:
+        raise bad_request("賛成を1つ以上押すか、ひとことを書いてください")
     return rows
 
 
@@ -85,13 +102,13 @@ def post_answer(share_id: str, answer: AnswerIn):
     # ② 入力を確かめる（おかしければ 400）
     comments = check_answer(answer, {r["product_id"] for r in items})
 
-    # ③ answer_id を1つ作り、votes（0〜1行）と comments（0〜3行）を「全部入るか、何も入らないか」で書く
+    # ③ answer_id を1つ作り、votes（0〜3行）と comments（0〜3行）を「全部入るか、何も入らないか」で書く
     answer_id = str(uuid.uuid4())
     statements = []
-    if answer.vote is not None:
+    for product_id in answer.votes:
         statements.append((
             "INSERT INTO votes (share_id, product_id, answer_id) VALUES (%s, %s, %s)",
-            (share_id, answer.vote, answer_id),
+            (share_id, product_id, answer_id),
         ))
     for product_id, reason, body in comments:
         statements.append((
