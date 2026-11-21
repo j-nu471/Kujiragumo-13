@@ -3,6 +3,8 @@ import type { Metadata } from "next";
 import { Noto_Sans_JP, Noto_Serif_JP } from "next/font/google";
 import SiteHeader from "./SiteHeader";
 import "./globals.css";
+// 本番でトップの古い作り置き（route-cache）が残るのを防ぐ。全ページを、開くたびに作るページにする（ADR-0017）
+export const dynamic = "force-dynamic";
 
 // 本文はゴシック、ロゴと見出しは明朝（globals.css の --font-sans・--font-serif で使う）
 const sans = Noto_Sans_JP({
