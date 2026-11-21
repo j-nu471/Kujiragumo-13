@@ -1,28 +1,25 @@
-// lib/summary.ts — ⑤ 集計画面（C-2）が使う型と、API を呼ぶ関数
+// lib/summary.ts — ⑤ 集計画面（C-2・C-3）が使う型と、API を呼ぶ関数
 // 仕様.md「GET /api/shares/{share_id}/summary」「POST …/purchase-click」
 import { API_BASE_URL } from "./config";
 import type { ReasonKey } from "./reasons";
 
-// 理由ごとの人数（理由の key は lib/reasons.ts。ADR-0013）
-export type ReasonCounts = Record<ReasonKey, number>;
-
-// 候補1件の集計（API が賛成の多い順に並べて返す）
+// 候補1件（API が F-08 の点数の順に並べて返す）。賛成数・理由の数・点数は返らない（ADR-0012）
 export type SummaryItem = {
   id: string;
   name: string;
   price: number;
-  votes: number;
-  reasons: ReasonCounts;
   comments: string[]; // ひとことの本文
 };
 
-// F-08：いちばん賛成が多い候補。賛成が1件もなければ null
+// 1位の理由：majority＝賛成多数／reason＝決め手（理由は reason_key）／voices＝理由が「とくにない」だけ
+export type TopWhy = "majority" | "reason" | "voices";
+
+// F-08：Giftia が決めた1位。賛成が1件もなければ null
 export type SummaryTop = {
   id: string;
   name: string;
-  votes: number;
-  reason_key: ReasonKey | null;
-  reason_count: number;
+  why: TopWhy;
+  reason_key: ReasonKey | null; // why が "reason" のときだけ入る
 };
 
 export type Summary = {
