@@ -10,6 +10,7 @@
 
 import os
 import threading
+import time
 
 import pymysql
 from dotenv import load_dotenv
@@ -18,8 +19,8 @@ load_dotenv()  # 同じフォルダの .env を読み、os.environ に入れる
 
 
 def get_connection(autocommit: bool = False):
-    """班のDBへの接続を1つ作って返す。使い終わったら close() する（execute 系が面倒を見る）。
-    autocommit=True は「読むだけ」の接続用（fetch_all が使い回す。下の _read_connection）"""
+    """班のDBへの接続を1つ作って返す。
+    ふだんは下の _connection() が、スレッドごとに1本だけ作って使い回す（autocommit=True）"""
     required = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"]
     missing = [k for k in required if not os.environ.get(k)]
     if missing:
@@ -42,70 +43,108 @@ def get_connection(autocommit: bool = False):
     )
 
 
-# ── 読む用の接続を使い回す（F-3：呼び出しごとの接続をやめる）──────────────────
-# 検索は「件数」と「一覧」で fetch_all を2回呼ぶ。毎回 Azure へ暗号化接続を張ると遅い。
-# ・スレッドごとに1本だけ持つ（FastAPI の通常の関数は別スレッドで動く。1本を共有すると同時利用で壊れる）
+# ── 接続を使い回す（F-3 #30、#35：DB との往復を減らす）─────────────────────────
+# 時間のほとんどは SQL の実行ではなく、API と DB の間の往復と、新しく接続するときのあいさつ（暗号化）にかかる。
+# ・読む・書くとも、スレッドごとに1本だけ持って使い回す
+#   （FastAPI の通常の関数は別スレッドで動く。1本を共有すると同時利用で壊れる）
 # ・autocommit=True にする。しないと、読んだ時点の状態（スナップショット）が残り、
 #   別の接続で入った賛成が、あとから読んでも見えなくなる
-# ・使う前に ping で生きているか確かめ、切れていたら張り直す（reconnect=True）
-# 書き込み（execute / execute_all）は今までどおり、1回ごとに接続して commit / rollback する
+# ・ping（生きているかの確認。これも往復1回）は、しばらく使っていなかったときだけする。
+#   DB は8時間使わない接続を切る設定だが、途中のネットワークがもっと早く切ることがあるので、60秒にしておく
 _local = threading.local()
+IDLE_PING_SECONDS = 60
+
+# 「接続が切れていた」ときのエラー番号（2006：サーバーがいない、2013：途中で切れた、2055：読み書きの途中で切れた）
+_CONNECTION_LOST = {2006, 2013, 2055}
 
 
-def _read_connection():
+def _is_connection_lost(err: Exception) -> bool:
+    if isinstance(err, pymysql.err.InterfaceError):  # 閉じた接続を使おうとした
+        return True
+    return isinstance(err, pymysql.err.OperationalError) and bool(err.args) and err.args[0] in _CONNECTION_LOST
+
+
+def _drop_connection():
+    """今のスレッドの接続を捨てる（次に使うとき、新しく作る）"""
     conn = getattr(_local, "conn", None)
+    _local.conn = None
     if conn is not None:
         try:
-            conn.ping(reconnect=True)
-            return conn
+            conn.close()
         except Exception:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    conn = get_connection(autocommit=True)
-    _local.conn = conn
+            pass
+
+
+def _connection():
+    """今のスレッドの接続を返す。なければ作る。60秒以上使っていなければ、ping で確かめてから返す"""
+    conn = getattr(_local, "conn", None)
+    if conn is not None and time.monotonic() - _local.last_used >= IDLE_PING_SECONDS:
+        try:
+            conn.ping(reconnect=True)  # 切れていれば、ここでつなぎ直す
+        except Exception:
+            _drop_connection()
+            conn = None
+    if conn is None:
+        conn = get_connection(autocommit=True)
+        _local.conn = conn
+    _local.last_used = time.monotonic()
     return conn
 
 
 def fetch_all(query: str, params: tuple = ()) -> list[dict]:
     """SELECT を実行して、行を dict のリストで返す。
     値は params で渡す（SQL の中の %s に入る）。文字列に直接つなげると、入力次第で DB を壊される。
-    接続はスレッドごとに使い回す（閉じない）。"""
-    conn = _read_connection()
-    with conn.cursor() as cur:
-        cur.execute(query, params)
-        return cur.fetchall()
+    接続はスレッドごとに使い回す（閉じない）。
+    接続が切れていたら、1回だけつなぎ直してやり直す（読むだけなので、やり直しても DB の中身は変わらない）"""
+    for attempt in (1, 2):
+        conn = _connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchall()
+        except Exception as err:
+            if attempt == 1 and _is_connection_lost(err):
+                _drop_connection()
+                continue
+            raise
+
+
+def _write(statements: list[tuple[str, tuple]]) -> int:
+    """INSERT / UPDATE を順に実行して確定し、最後の文で影響した行数を返す。
+    ・1つだけのとき：autocommit のまま流す（1つの文は、全部入るか何も入らないかのどちらか。往復が1回で済む）
+    ・2つ以上のとき：begin で始めて、最後に1回だけ commit。1つでも失敗したら全部を取り消す（rollback）
+    書き込みは、失敗してもやり直さない（どこまで入ったか分からないまま流すと、二重に入るおそれがある）"""
+    conn = _connection()
+    many = len(statements) > 1
+    try:
+        if many:
+            conn.begin()
+        n = 0
+        with conn.cursor() as cur:
+            for query, params in statements:
+                n = cur.execute(query, params)
+        if many:
+            conn.commit()
+        return n
+    except Exception as err:
+        if many:
+            try:
+                conn.rollback()  # 途中で失敗したら、書きかけを取り消す
+            except Exception:
+                _drop_connection()  # 取り消せないほど壊れた接続は捨てる（DB 側でも、切れた接続の書きかけは取り消される）
+        if _is_connection_lost(err):
+            _drop_connection()
+        raise
 
 
 def execute(query: str, params: tuple = ()) -> int:
-    """【C-0追加】INSERT / UPDATE を実行して commit し、影響した行数を返す。
-    値は fetch_all と同じく params で渡す（SQL の %s に入る）。commit しないと DB に確定しない。"""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            n = cur.execute(query, params)
-        conn.commit()
-        return n
-    except Exception:
-        conn.rollback()  # 途中で失敗したら、書きかけを取り消す
-        raise
-    finally:
-        conn.close()
+    """【C-0追加】INSERT / UPDATE を1つ実行して確定し、影響した行数を返す。
+    値は fetch_all と同じく params で渡す（SQL の %s に入る）。"""
+    return _write([(query, params)])
 
 
 def execute_all(statements: list[tuple[str, tuple]]) -> None:
     """【B-1追加】いくつかの INSERT / UPDATE を、1つの接続で順に実行して、最後に1回だけ commit する。
     1つでも失敗したら全部を取り消す（rollback）。④の回答（votes と comments）を「全部入るか、何も入らないか」にするため。
     statements は (SQL, params) の組のリスト。値は execute と同じく params で渡す。"""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            for query, params in statements:
-                cur.execute(query, params)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    _write(statements)
