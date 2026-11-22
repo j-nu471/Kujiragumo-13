@@ -173,7 +173,10 @@ export default function ColleaguePage({ params }: { params: Promise<{ shareId: s
                   <h2 className="name">{item.name}</h2>
                   <div className="price-row" style={{ justifyContent: "flex-start", gap: 16 }}>
                     <p className="price">{item.price.toLocaleString()}<small>円</small></p>
-                    <p className="meta"><span className="star" aria-hidden="true">★</span> {item.rating}</p>
+                    {/* 【#39】レビューがない商品は「★0」ではなく「評価なし」（技術負債 F-4） */}
+                    {item.rating === null
+                      ? <p className="meta">評価なし</p>
+                      : <p className="meta"><span className="star" aria-hidden="true">★</span> {item.rating}</p>}
                   </div>
 
                   <div className="form answer-row">

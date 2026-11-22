@@ -8,7 +8,7 @@ export type ShareItem = {
   id: string;       // 商品ID（例 G0001）
   name: string;     // 商品名
   price: number;    // 価格（円）
-  rating: number;   // レビューの平均
+  rating: number | null; // レビューの平均（【#39】レビューがなければ null。画面は「評価なし」と出す）
   position: number; // 共有リストに入れた順（1〜3）
   brand: string;    // ショップ名（画面のショップ名の行。デザインの Issue）
   category: string; // カテゴリー（サムネイル画像を選ぶ）

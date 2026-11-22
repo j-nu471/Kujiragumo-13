@@ -93,7 +93,10 @@ export default function CreatedPage({ params }: { params: Promise<{ shareId: str
                 <h3 className="name">{item.name}</h3>
                 <div className="price-row">
                   <p className="price">{item.price.toLocaleString()}<small>円</small></p>
-                  <p className="meta"><span className="star" aria-hidden="true">★</span> {item.rating}</p>
+                  {/* 【#39】レビューがない商品は「★0」ではなく「評価なし」（技術負債 F-4） */}
+                  {item.rating === null
+                    ? <p className="meta">評価なし</p>
+                    : <p className="meta"><span className="star" aria-hidden="true">★</span> {item.rating}</p>}
                 </div>
               </div>
             </div>
