@@ -93,13 +93,13 @@ def get_share(share_id: str):
                ORDER BY si.position""",
             (share_id,),
         )
-    # ③ 画面で使う項目名に詰め替える（検索 API の to_gift と同じ名前。評価がなければ 0）
+    # ③ 画面で使う項目名に詰め替える（検索 API の to_gift と同じ名前。評価がなければ null。#39・技術負債 F-4）
     items = [
         {
             "id": r["product_id"],
             "name": r["product_name"],
             "price": r["price"],
-            "rating": float(r["rating"]) if r["rating"] is not None else 0,
+            "rating": float(r["rating"]) if r["rating"] is not None else None,
             "position": r["position"],
             "brand": r["brand"],
             "category": r["category"],

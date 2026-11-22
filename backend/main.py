@@ -10,7 +10,7 @@
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import fetch_all
@@ -38,6 +38,10 @@ def health():
     return {"status": "ok", "db": row["db"], "products": row["products"]}
 
 
+# 【#39追加】贈るシーン（商品のシーンタグ product_scenes.scene_tag の9つ）。この中の値だけを受け付ける（ADR-0019）
+SCENES = ("送別", "誕生日", "お礼", "母の日", "父の日", "結婚祝い", "出産祝い", "お中元", "お歳暮")
+
+
 @app.get("/api/search")
 def search(
     q: str = Query(default="", description="キーワード（空白区切りで複数。すべてを含む商品）"),
@@ -45,9 +49,13 @@ def search(
     indiv_wrap: bool = Query(default=False, description="true なら、説明文に「個包装」とある商品だけ"),
     price_min: int | None = Query(default=None, ge=0, description="価格の下限（以上）"),
     price_max: int | None = Query(default=None, ge=0, description="価格の上限（以下）"),
+    scene: str = Query(default="", description="贈るシーン（空ならすべて）。SCENES のどれか"),
+    offset: int = Query(default=0, ge=0, description="何件目から返すか（0 から。21件目以降を見るとき 20）"),
     limit: int = Query(default=20, ge=1, le=100, description="返す件数"),
 ):
-    """条件に合う商品を、人気順（直近1年の販売数）で上位 limit 件返す"""
+    """条件に合う商品を、人気順（直近1年の販売数）で offset 件目から limit 件返す。全件数（total）も返す"""
+    if scene and scene not in SCENES:
+        raise HTTPException(status_code=400, detail="贈るシーンは、選択肢の中から選んでください")
     # ① 条件を WHERE に1つずつ足す（値は %s で渡し、SQL の文字列に直接つなげない）
     where, params = ["stock > 0"], []  # 在庫切れは出さない
     for word in q.split():  # 【穴1】q を空白で区切って1語ずつにする（文字列のメソッド）
@@ -65,16 +73,20 @@ def search(
     if price_max is not None:
         where.append("price <= %s")
         params.append(price_max)
+    if scene:
+        # 【#39追加】そのシーンのタグが付いた商品だけ。product_scenes の主キー（product_id, scene_tag）で1行ずつ確かめる（既存の表は変えない。N-02）
+        where.append("EXISTS (SELECT 1 FROM product_scenes s WHERE s.product_id = products.product_id AND s.scene_tag = %s)")
+        params.append(scene)
     condition = " AND ".join(where)
 
-    # ② 件数と、人気順の上位 limit 件を取る
+    # ② 件数と、人気順の offset 件目から limit 件を取る（【#39】offset で21件目以降も見られる）
     total = fetch_all(f"SELECT COUNT(*) AS n FROM products WHERE {condition}", tuple(params))[0]["n"]
     rows = fetch_all(
         f"""SELECT product_id, category, brand, product_name, price, rating, review_count
             FROM products WHERE {condition}
             ORDER BY sales_count DESC, product_id
-            LIMIT %s""",
-        (*params, limit),
+            LIMIT %s OFFSET %s""",
+        (*params, limit, offset),
     )
     # ③ DB の行を、画面の Gift 型（1週目）に詰め替えて返す
     return {"total": total, "results": [to_gift(r) for r in rows]}
@@ -88,6 +100,6 @@ def to_gift(r: dict) -> dict:
         "brand": r["brand"],
         "name": r["product_name"],  # 【穴4】商品名の列名（データ定義.md の products を見る）
         "price": r["price"],
-        "rating": float(r["rating"]) if r["rating"] is not None else 0,  # レビューなしは 0
+        "rating": float(r["rating"]) if r["rating"] is not None else None,  # 【#39】レビューなしは null（画面は「評価なし」と出す。技術負債 F-4）
         "reviewCount": r["review_count"],
     }

@@ -27,7 +27,10 @@ export default function ResultCard({ gift, rank, picked, disabled, onToggle, sho
         <h3 className="name">{gift.name}</h3>
         <div className="price-row">
           <p className="price">{gift.price.toLocaleString()}<small>円</small></p>
-          <p className="meta"><span className="star" aria-hidden="true">★</span> {gift.rating}（{gift.reviewCount}件）</p>
+          {/* 【#39】レビューがない商品は「★0」ではなく「評価なし」（技術負債 F-4） */}
+          {gift.rating === null
+            ? <p className="meta">評価なし</p>
+            : <p className="meta"><span className="star" aria-hidden="true">★</span> {gift.rating}（{gift.reviewCount}件）</p>}
         </div>
         {/* 押すと候補に入り、もう一度押すと外れる。3つ選んだあとは、ほかの商品は押せない */}
         {showPick && (
