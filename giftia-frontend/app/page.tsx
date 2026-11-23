@@ -67,6 +67,7 @@ export default function Home() {
   const [flash, setFlash] = useState(false);   // 【#39】「はじめる」のあと、下のバーを3回光らせる
   const startButton = useRef<HTMLButtonElement>(null);
   const resultsTop = useRef<HTMLElement>(null);
+  const scrollAfterLoad = useRef(false); // 【#39】前の20件・次の20件を押した（読み終わったら結果の見出しまでスクロールする）
 
   // 【デザイン】下のバーにサムネイルを出すため、選んだ商品の中身も覚えておく（検索し直しても消えないように）
   const [pickedGifts, setPickedGifts] = useState<Record<string, Gift>>({});
@@ -135,6 +136,11 @@ export default function Home() {
   // ② 検索ボタンの処理（API に聞くので、結果が返るまで待つ＝async/await）
   async function onSearch(e: React.FormEvent) {
     e.preventDefault(); // ページの再読み込みを止める
+    // 【#39】予算は0以上の整数（円）だけ送る。入力欄の min では手入力のマイナスや小数を止められないため、ここで確かめる
+    if (mode === "standard" && [priceMin, priceMax].some((v) => v !== "" && !/^\d+$/.test(v))) {
+      setError("予算は0以上の整数（円）で入れてください");
+      return;
+    }
     // 【#39】予算は下限 ≦ 上限のときだけ送る
     if (mode === "standard" && priceMin && priceMax && Number(priceMin) > Number(priceMax)) {
       setError("予算の下限が、上限より大きくなっています");
@@ -148,10 +154,18 @@ export default function Home() {
   }
 
   // 【#39】前の20件・次の20件：今出している結果と同じ条件で、何件目からだけ変える。結果の見出しまで戻す
+  // 読んでいる間は結果の <section> が消えるので、スクロールは新しい結果を描いたあと（下の useEffect）でする
   async function onPage(nextOffset: number) {
+    scrollAfterLoad.current = true;
     await load(shown.condition, shown.mode, nextOffset, shown.searched);
-    resultsTop.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  // 【#39】ページを移ったあと、新しい結果が画面に出てから、結果の見出しまでスクロールする
+  useEffect(() => {
+    if (searching || !scrollAfterLoad.current) return;
+    scrollAfterLoad.current = false;
+    resultsTop.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [searching, results]);
 
   const pageNo = Math.floor(offset / PAGE_SIZE) + 1;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -220,9 +234,9 @@ export default function Home() {
                   {/* 【#39】予算：下限と上限を自由に入れる（どちらかだけでもよい） */}
                   <div className="budget" role="group" aria-labelledby="budget-label">
                     <span className="field-label" id="budget-label">予算</span>
-                    <input type="number" inputMode="numeric" min={0} step={100} value={priceMin} onChange={(e) => setPriceMin(e.target.value)} placeholder="下限" aria-label="予算の下限（円）" />
+                    <input type="number" inputMode="numeric" min={0} step={1} value={priceMin} onChange={(e) => setPriceMin(e.target.value)} placeholder="下限" aria-label="予算の下限（円）" />
                     <span aria-hidden="true">〜</span>
-                    <input type="number" inputMode="numeric" min={0} step={100} value={priceMax} onChange={(e) => setPriceMax(e.target.value)} placeholder="上限" aria-label="予算の上限（円）" />
+                    <input type="number" inputMode="numeric" min={0} step={1} value={priceMax} onChange={(e) => setPriceMax(e.target.value)} placeholder="上限" aria-label="予算の上限（円）" />
                     <span>円</span>
                   </div>
                 </>
